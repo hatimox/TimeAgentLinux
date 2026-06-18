@@ -10,6 +10,24 @@ Reuses the same config + token as the Electron app
 (`~/.config/TimeAgent/settings.json` + the libsecret entry
 `net.omnevo.timeagent`/`tp-token`), so an existing setup is picked up.
 
+## Install (prebuilt packages)
+
+Each tagged release publishes packages built by GitHub Actions
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) for x86_64:
+
+| Artifact | Install |
+|----------|---------|
+| `timeagent_<ver>_amd64.deb`       | `sudo apt install ./timeagent_<ver>_amd64.deb` |
+| `timeagent-<ver>.x86_64.rpm`       | `sudo dnf install ./timeagent-<ver>.x86_64.rpm` |
+| `TimeAgent-<ver>-x86_64.AppImage`  | `chmod +x TimeAgent-*.AppImage && ./TimeAgent-*.AppImage` |
+| `timeagent-<ver>-x86_64-linux.tar.gz` | extract and run `./timeagent` (needs GTK4 + libpulse/libsecret installed) |
+
+Packages require **GTK 4.10+** (so a reasonably recent distro). To cut a release,
+push a tag: `git tag v0.1.0 && git push origin v0.1.0`.
+
+A CI workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) builds and
+lints every push/PR to `main`.
+
 ## Build (on Ubuntu)
 
 System dependencies:

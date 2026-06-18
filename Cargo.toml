@@ -3,6 +3,11 @@ name = "timeagent"
 version = "0.1.0"
 edition = "2021"
 description = "Log meeting and task time to TargetProcess — native Linux tray app"
+authors = ["Hatim Haffane <hatim.haffane@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/hatimox/TimeAgentLinux"
+repository = "https://github.com/hatimox/TimeAgentLinux"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }  # v4_10: AlertDialog
@@ -24,3 +29,36 @@ iana-time-zone = "0.1"
 [[bin]]
 name = "timeagent"
 path = "src/main.rs"
+
+# Smaller, faster release artifacts for packaging.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+# ---- .deb packaging (cargo-deb) ----
+# Runtime library deps are auto-detected from the ELF via dpkg-shlibdeps ($auto).
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+extended-description = """\
+TimeAgent is a native Linux tray app (GTK4 + StatusNotifierItem) that logs \
+meeting and task time to TargetProcess. Microphone-based meeting detection \
+runs in-process via PulseAudio/PipeWire."""
+assets = [
+    ["target/release/timeagent", "usr/bin/", "755"],
+    ["packaging/timeagent.desktop", "usr/share/applications/", "644"],
+    ["packaging/timeagent.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/timeagent/README.md", "644"],
+]
+
+# ---- .rpm packaging (cargo-generate-rpm) ----
+# Build the binary first (cargo build --release); deps via --auto-req in CI.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/timeagent", dest = "/usr/bin/timeagent", mode = "755" },
+    { source = "packaging/timeagent.desktop", dest = "/usr/share/applications/timeagent.desktop", mode = "644" },
+    { source = "packaging/timeagent.svg", dest = "/usr/share/icons/hicolor/scalable/apps/timeagent.svg", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/timeagent/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/timeagent/LICENSE", mode = "644", doc = true },
+]
