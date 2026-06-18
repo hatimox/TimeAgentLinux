@@ -99,12 +99,14 @@ jobs:
           rm -rf "$APPDIR"
           install -Dm755 target/release/timeagent "$APPDIR/usr/bin/timeagent"
           install -Dm644 packaging/timeagent.desktop "$APPDIR/usr/share/applications/timeagent.desktop"
-          install -Dm644 packaging/timeagent.svg \
-            "$APPDIR/usr/share/icons/hicolor/scalable/apps/timeagent.svg"
+          for s in 16 32 48 64 128 256 512; do
+            install -Dm644 "packaging/icons/hicolor/${s}x${s}/apps/timeagent.png" \
+              "$APPDIR/usr/share/icons/hicolor/${s}x${s}/apps/timeagent.png"
+          done
 
           ./linuxdeploy --appdir "$APPDIR" --plugin gtk \
             -d packaging/timeagent.desktop \
-            -i packaging/timeagent.svg \
+            -i packaging/icons/hicolor/256x256/apps/timeagent.png \
             --output appimage
           mv TimeAgent*.AppImage "dist/TimeAgent-${VER}-x86_64.AppImage"
 
