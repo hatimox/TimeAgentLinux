@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,11 +41,7 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VER="${GITHUB_REF#refs/tags/v}"
-          else
-            VER="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
-          fi
+          VER="${GITHUB_REF#refs/tags/v}"
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "Resolved version: ${VER}"
 
@@ -123,10 +118,13 @@ jobs:
           name: timeagent-packages
           path: dist/*
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      # Appends the built packages to the release for this tag. If the release
+      # already exists (e.g. created manually) its assets are updated in place;
+      # otherwise it is created. Existing release notes are preserved.
+      - name: Append artifacts to the release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
