@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TimeAgent
+GenericName=Time Tracker
+Comment=Log meeting and task time to TargetProcess
+Exec=timeagent
+Icon=timeagent
+Terminal=false
+Categories=Office;ProjectManagement;
+Keywords=time;tracking;targetprocess;meeting;
+StartupNotify=false

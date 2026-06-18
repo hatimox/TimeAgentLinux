@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build & lint
+    # GTK 4.10+ is required (the app uses the gtk4 `v4_10` feature for
+    # AlertDialog). Ubuntu 24.04 ships GTK 4.14; older runners ship 4.6.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-4-dev libpulse-dev libsecret-1-dev libdbus-1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+        continue-on-error: true
+
+      - name: Clippy
+        run: cargo clippy --all-targets
+
+      - name: Build (release)
+        run: cargo build --release --verbose
+
+      - name: Test
+        run: cargo test --release --verbose

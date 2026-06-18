@@ -23,9 +23,9 @@ pub fn mic_in_use() -> bool {
 fn query() -> Result<bool, String> {
     let mut ml = Mainloop::new().ok_or("no mainloop")?;
     let mut ctx = Context::new(&ml, "TimeAgent").ok_or("no context")?;
-    ctx.connect(None, CtxFlags::NOFLAGS, None).map_err(|e| e.to_string())?;
+    ctx.connect(None, CtxFlags::NOFLAGS, None).map_err(|e| format!("{:?}", e))?;
 
-    ml.start().map_err(|e| e.to_string())?;
+    ml.start().map_err(|e| format!("{:?}", e))?;
 
     // Wait for the context to be ready.
     loop {

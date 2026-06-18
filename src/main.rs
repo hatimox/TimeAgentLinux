@@ -21,7 +21,7 @@ mod ui_tasks;
 mod watcher;
 
 use gtk::prelude::*;
-use gtk::{gio, glib, Application};
+use gtk::{glib, Application};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -46,19 +46,24 @@ fn main() {
     // Keep the runtime alive for the process lifetime.
     std::mem::forget(rt);
 
-    let app = Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::IS_SERVICE).build();
+    // Default flags (single-instance, activates on run). NOT IS_SERVICE: that
+    // suppresses the `activate` signal on launch (it waits for a remote D-Bus
+    // activation instead), so the app would register and immediately shut down.
+    let app = Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(move |app| {
-        // glib channel: async ops → GTK main loop.
-        let (tx, rx) = glib::MainContext::channel::<Update>(glib::Priority::DEFAULT);
+        // async-channel: async ops → GTK main loop (drained by a local future).
+        let (tx, rx) = async_channel::unbounded::<Update>();
         let store = Store::new(tx, rt_handle.clone());
 
         // Hold open windows so they aren't dropped.
         let tasks_win: Rc<RefCell<Option<Rc<RefCell<ui_tasks::TasksWindow>>>>> = Rc::new(RefCell::new(None));
         let settings_win: Rc<RefCell<Option<gtk::Window>>> = Rc::new(RefCell::new(None));
 
-        // Hold the app active with no visible window (tray app).
-        let _hold = app.hold();
+        // Hold the app active with no visible window (tray app). Forget the guard
+        // so the hold lasts the whole process — a local `_hold` would drop at the
+        // end of this closure and let the IS_SERVICE app time out and exit.
+        std::mem::forget(app.hold());
 
         // ---- tray (own thread) + command channel polled on a glib timeout ----
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<TrayCmd>();
@@ -69,7 +74,7 @@ fn main() {
         service.spawn();
 
         // ---- watcher ----
-        let wh = watcher::start();
+        let wh = watcher::start(&rt_handle);
         let evt_tx_for_actions = wh.action_sender();
         let wh_inner = wh.clone_inner();
 
@@ -85,41 +90,42 @@ fn main() {
                         watcher::MeetingEvent::State { in_meeting, .. } => {
                             inflag.store(in_meeting, std::sync::atomic::Ordering::SeqCst);
                             trayh.update(|_t: &mut TrayMenu| {});
-                            let _ = store_tx.send(Update::MeetingState(in_meeting));
+                            let _ = store_tx.try_send(Update::MeetingState(in_meeting));
                         }
                         watcher::MeetingEvent::Ended { start, end } => {
                             // Convert monotonic Instants to wall-clock ms.
                             let now_inst = std::time::Instant::now();
                             let now_ms = chrono::Utc::now().timestamp_millis();
                             let to_ms = |i: std::time::Instant| now_ms - now_inst.saturating_duration_since(i).as_millis() as i64;
-                            let _ = store_tx.send(Update::MeetingEnded { start_ms: to_ms(start), end_ms: to_ms(end) });
+                            let _ = store_tx.try_send(Update::MeetingEnded { start_ms: to_ms(start), end_ms: to_ms(end) });
                         }
                     }
                 }
             });
         }
 
-        // ---- glib channel receiver: apply updates / open prompt ----
+        // ---- update receiver: apply updates / open prompt (runs on the main loop) ----
         {
             let tasks_win = tasks_win.clone();
             let store2 = store.clone();
             let wh_inner_busy = wh_inner.clone();
-            rx.attach(None, move |u| {
-                match u {
-                    Update::Items | Update::Times => {
-                        if let Some(tw) = tasks_win.borrow().as_ref() {
-                            tw.borrow().render();
+            glib::spawn_future_local(async move {
+                while let Ok(u) = rx.recv().await {
+                    match u {
+                        Update::Items | Update::Times => {
+                            if let Some(tw) = tasks_win.borrow().as_ref() {
+                                tw.borrow().render();
+                            }
+                        }
+                        Update::Status(_s) => { /* could surface in a window status bar */ }
+                        Update::UserInfo => {}
+                        Update::MeetingState(_) => {}
+                        Update::MeetingEnded { start_ms, end_ms } => {
+                            ui_prompt::present(store2.clone(), start_ms, end_ms);
+                            watcher::clear_busy(&wh_inner_busy);
                         }
                     }
-                    Update::Status(_s) => { /* could surface in a window status bar */ }
-                    Update::UserInfo => {}
-                    Update::MeetingState(_) => {}
-                    Update::MeetingEnded { start_ms, end_ms } => {
-                        ui_prompt::present(store2.clone(), start_ms, end_ms);
-                        watcher::clear_busy(&wh_inner_busy);
-                    }
                 }
-                glib::ControlFlow::Continue
             });
         }
 

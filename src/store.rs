@@ -31,12 +31,12 @@ pub struct Store {
     pub states: Mutex<HashMap<i64, HashMap<String, Vec<WorkflowState>>>>,
     pub scope_all: Mutex<bool>,
     pub in_meeting: Mutex<bool>,
-    tx: glib::Sender<Update>,
+    tx: async_channel::Sender<Update>,
     rt: tokio::runtime::Handle,
 }
 
 impl Store {
-    pub fn new(tx: glib::Sender<Update>, rt: tokio::runtime::Handle) -> Arc<Self> {
+    pub fn new(tx: async_channel::Sender<Update>, rt: tokio::runtime::Handle) -> Arc<Self> {
         let s = Settings::load();
         let client = if s.is_configured() {
             Some(TpClient::new(&s.tp_url, &s.token, s.my_user_id))
@@ -57,11 +57,12 @@ impl Store {
     }
 
     fn notify(&self, u: Update) {
-        let _ = self.tx.send(u);
+        // Unbounded channel: try_send only fails if the receiver is gone.
+        let _ = self.tx.try_send(u);
     }
 
-    /// A clone of the glib sender, for the watcher-forwarding task.
-    pub fn sender(&self) -> glib::Sender<Update> {
+    /// A clone of the update sender, for the watcher-forwarding task.
+    pub fn sender(&self) -> async_channel::Sender<Update> {
         self.tx.clone()
     }
 
