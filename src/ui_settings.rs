@@ -4,7 +4,7 @@
 use crate::models::{DynamicMeeting, RecurringEntry};
 use crate::store::Store;
 use gtk::prelude::*;
-use gtk::{glib, Align, Box as GtkBox, Button, Entry, Label, Notebook, Orientation, PasswordEntry, Window};
+use gtk::{glib, Align, Box as GtkBox, Button, DropDown, Entry, Label, Notebook, Orientation, PasswordEntry, Window};
 use std::sync::Arc;
 
 pub fn open(store: Arc<Store>) -> Window {

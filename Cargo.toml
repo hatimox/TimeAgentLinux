@@ -5,7 +5,8 @@ edition = "2021"
 description = "Log meeting and task time to TargetProcess — native Linux tray app"
 
 [dependencies]
-gtk = { package = "gtk4", version = "0.9" }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }  # v4_10: AlertDialog
+async-channel = "2"                # async→UI updates (replaces removed glib::MainContext::channel)
 ksni = "0.2"                       # StatusNotifierItem tray (GNOME via AppIndicator ext / KDE native)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
