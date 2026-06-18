@@ -33,12 +33,14 @@ const IDLE: Duration = Duration::from_secs(8);
 const ACTIVE: Duration = Duration::from_secs(3);
 const SUPPRESS_MAX: Duration = Duration::from_secs(90);
 
-pub fn start() -> WatcherHandle {
+pub fn start(rt: &tokio::runtime::Handle) -> WatcherHandle {
     let (tx, rx) = mpsc::unbounded_channel();
     let inner = Arc::new(Mutex::new(WatcherState::default()));
     let st = inner.clone();
     let tx2 = tx.clone();
-    tokio::spawn(async move {
+    // Spawn via the Handle: start() runs on the GTK main thread, which is not
+    // inside the runtime context that the free `tokio::spawn` requires.
+    rt.spawn(async move {
         loop {
             let in_meeting = st.lock().unwrap().session_start.is_some();
             tokio::time::sleep(if in_meeting { ACTIVE } else { IDLE }).await;
