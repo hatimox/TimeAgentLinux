@@ -9,12 +9,14 @@
 //!   - The ksni tray runs on its own thread and forwards menu clicks over an
 //!     std mpsc channel that we poll on a glib timeout.
 
+mod command;
 mod holidays;
 mod mic;
 mod models;
 mod settings;
 mod store;
 mod tpclient;
+mod ui_popup;
 mod ui_prompt;
 mod ui_settings;
 mod ui_tasks;
@@ -25,19 +27,10 @@ use gtk::{glib, Application};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use command::TrayCmd;
 use store::{Store, Update};
 
 const APP_ID: &str = "net.omnevo.timeagent";
-
-#[derive(Clone)]
-enum TrayCmd {
-    OpenTasks,
-    OpenSettings,
-    Split,
-    StopTracking,
-    Refresh,
-    Quit,
-}
 
 fn main() {
     // tokio runtime on a dedicated thread; we hand its Handle to the Store.
@@ -59,6 +52,7 @@ fn main() {
         // Hold open windows so they aren't dropped.
         let tasks_win: Rc<RefCell<Option<Rc<RefCell<ui_tasks::TasksWindow>>>>> = Rc::new(RefCell::new(None));
         let settings_win: Rc<RefCell<Option<gtk::Window>>> = Rc::new(RefCell::new(None));
+        let popup_win: Rc<RefCell<Option<Rc<RefCell<ui_popup::Popup>>>>> = Rc::new(RefCell::new(None));
 
         // Hold the app active with no visible window (tray app). Forget the guard
         // so the hold lasts the whole process — a local `_hold` would drop at the
@@ -81,14 +75,16 @@ fn main() {
         // Forward watcher events into the Store's glib channel via the runtime.
         {
             let store_tx = store.sender();
+            let store_meeting = store.clone();
             let inflag = in_meeting_flag.clone();
             let trayh = tray_handle.clone();
             let mut wh = wh; // move the handle (owns the events receiver)
             rt_handle.spawn(async move {
                 while let Some(ev) = wh.events.recv().await {
                     match ev {
-                        watcher::MeetingEvent::State { in_meeting, .. } => {
+                        watcher::MeetingEvent::State { in_meeting, session_start } => {
                             inflag.store(in_meeting, std::sync::atomic::Ordering::SeqCst);
+                            store_meeting.set_meeting(if in_meeting { session_start } else { None });
                             trayh.update(|_t: &mut TrayMenu| {});
                             let _ = store_tx.try_send(Update::MeetingState(in_meeting));
                         }
@@ -135,8 +131,10 @@ fn main() {
             let store = store.clone();
             let tasks_win = tasks_win.clone();
             let settings_win = settings_win.clone();
+            let popup_win = popup_win.clone();
             let evt_tx = evt_tx_for_actions.clone();
             let wh_inner = wh_inner.clone();
+            let cmd_for_win = cmd_tx.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
@@ -144,9 +142,19 @@ fn main() {
                         TrayCmd::Refresh => store.refresh(),
                         TrayCmd::Split => watcher::split_with(&wh_inner, &evt_tx),
                         TrayCmd::StopTracking => watcher::stop_with(&wh_inner, &evt_tx),
+                        TrayCmd::ShowPopup => {
+                            if popup_win.borrow().is_none() {
+                                let pw = ui_popup::Popup::new(store.clone(), cmd_for_win.clone());
+                                *popup_win.borrow_mut() = Some(pw);
+                            }
+                            if let Some(pw) = popup_win.borrow().as_ref() {
+                                pw.borrow().refresh();
+                                pw.borrow().window.present();
+                            }
+                        }
                         TrayCmd::OpenTasks => {
                             if tasks_win.borrow().is_none() {
-                                let tw = ui_tasks::TasksWindow::new(store.clone());
+                                let tw = ui_tasks::TasksWindow::new(store.clone(), cmd_for_win.clone());
                                 *tasks_win.borrow_mut() = Some(tw);
                             }
                             if let Some(tw) = tasks_win.borrow().as_ref() {
@@ -189,13 +197,19 @@ impl ksni::Tray for TrayMenu {
         if self.in_meeting.load(std::sync::atomic::Ordering::SeqCst) { "appointment-soon".into() } else { "appointment-new".into() }
     }
     fn title(&self) -> String { "TimeAgent".into() }
-    /// Advertise as menu-only so hosts (e.g. the GNOME/Ubuntu AppIndicator
-    /// extension) open the menu on a single left-click instead of routing the
-    /// click to Activate. Relies on the vendored ksni patch (see Cargo.toml).
-    fn item_is_menu(&self) -> bool { true }
-    /// Double-click still fires Activate on some hosts — open the tasks window.
+    // NOTE: deliberately NOT advertising item_is_menu=true. On the GNOME/Ubuntu
+    // AppIndicator extension that renders ksni menus empty, item_is_menu=true also
+    // disables Activate, leaving nothing working. With the default (false),
+    // Activate fires (double-click here) so the tray can open the app window.
+    /// Primary action (double-click on the GNOME AppIndicator host): show the
+    /// popup — the app's main surface (meeting status, hours, quick actions).
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.cmd.send(TrayCmd::OpenTasks);
+        let _ = self.cmd.send(TrayCmd::ShowPopup);
+    }
+    /// Single middle-click on the GNOME AppIndicator host → also show the popup
+    /// (a genuine single-click path, since single left-click can't be hooked).
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.cmd.send(TrayCmd::ShowPopup);
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;

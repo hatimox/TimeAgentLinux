@@ -8,9 +8,10 @@ use crate::models::*;
 use crate::settings::Settings;
 use crate::tpclient::TpClient;
 use anyhow::Result;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// UI-bound notifications sent from async ops back to the GTK main loop.
 #[derive(Clone, Debug)]
@@ -31,6 +32,9 @@ pub struct Store {
     pub states: Mutex<HashMap<i64, HashMap<String, Vec<WorkflowState>>>>,
     pub scope_all: Mutex<bool>,
     pub in_meeting: Mutex<bool>,
+    /// When a meeting is being tracked, the monotonic instant it started — used
+    /// for the live elapsed timer in the popup.
+    meeting_start: Mutex<Option<Instant>>,
     last_status: Mutex<String>,
     tx: async_channel::Sender<Update>,
     rt: tokio::runtime::Handle,
@@ -52,6 +56,7 @@ impl Store {
             states: Mutex::new(HashMap::new()),
             scope_all: Mutex::new(false),
             in_meeting: Mutex::new(false),
+            meeting_start: Mutex::new(None),
             last_status: Mutex::new(String::new()),
             tx,
             rt,
@@ -77,6 +82,41 @@ impl Store {
     pub fn user_identity(&self) -> (i64, String) {
         let s = self.settings.lock().unwrap();
         (s.my_user_id, s.my_user_name.clone())
+    }
+
+    /// Record meeting state: `Some(start)` while tracking, `None` when idle.
+    pub fn set_meeting(&self, start: Option<Instant>) {
+        *self.in_meeting.lock().unwrap() = start.is_some();
+        *self.meeting_start.lock().unwrap() = start;
+    }
+
+    /// Elapsed time of the current meeting, if one is being tracked.
+    pub fn meeting_elapsed(&self) -> Option<std::time::Duration> {
+        self.meeting_start.lock().unwrap().map(|s| s.elapsed())
+    }
+
+    /// Logged hours summed over (today, this ISO week, the given month), from the
+    /// currently-loaded time entries. `month` is a NaiveDate in the target month.
+    pub fn hours_summary(&self, month: NaiveDate) -> (f64, f64, f64) {
+        let today = chrono::Local::now().date_naive();
+        let week = today.iso_week();
+        let times = self.times.lock().unwrap();
+        let mut t = 0.0;
+        let mut w = 0.0;
+        let mut m = 0.0;
+        for e in times.iter() {
+            let Ok(d) = NaiveDate::parse_from_str(&e.day, "%Y-%m-%d") else { continue };
+            if d == today {
+                t += e.hours;
+            }
+            if d.iso_week() == week {
+                w += e.hours;
+            }
+            if d.year() == month.year() && d.month() == month.month() {
+                m += e.hours;
+            }
+        }
+        (t, w, m)
     }
 
     /// A clone of the update sender, for the watcher-forwarding task.
@@ -125,6 +165,9 @@ impl Store {
                         c.my_user_id = id;
                     }
                     me.notify(Update::UserInfo);
+                    // The startup refresh ran with user id 0 (detection not done
+                    // yet) and returned nothing; re-fetch now that we know the user.
+                    me.refresh();
                 }
                 Err(e) => me.notify(Update::Status(format!("Sign-in failed: {}", e))),
             }

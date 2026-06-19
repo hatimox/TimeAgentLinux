@@ -8,7 +8,7 @@ use gtk::{glib, Align, Box as GtkBox, Button, DropDown, Entry, Label, Notebook, 
 use std::sync::Arc;
 
 pub fn open(store: Arc<Store>) -> Window {
-    let window = Window::builder().title("TimeAgent Settings").default_width(500).default_height(470).build();
+    let window = Window::builder().title("TimeAgent Settings").default_width(500).default_height(470).hide_on_close(true).build();
     let nb = Notebook::new();
     nb.append_page(&account_tab(&store, &window), Some(&Label::new(Some("Account"))));
     nb.append_page(&meetings_tab(&store), Some(&Label::new(Some("Meetings"))));

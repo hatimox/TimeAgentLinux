@@ -2,6 +2,7 @@
 //! status change, parent-US link, hours total, direct logging, and edit/delete
 //! of individual time entries. Built with gtk4-rs.
 
+use crate::command::TrayCmd;
 use crate::models::WorkItem;
 use crate::store::Store;
 use gtk::prelude::*;
@@ -22,8 +23,16 @@ pub struct TasksWindow {
 }
 
 impl TasksWindow {
-    pub fn new(store: Arc<Store>) -> Rc<RefCell<TasksWindow>> {
-        let window = Window::builder().title("TimeAgent — Tasks").default_width(760).default_height(560).build();
+    pub fn new(store: Arc<Store>, cmd: std::sync::mpsc::Sender<TrayCmd>) -> Rc<RefCell<TasksWindow>> {
+        // hide_on_close: closing must not destroy the window — main.rs keeps an
+        // Rc to it and re-present()s on the next open; presenting a destroyed
+        // window leaves GTK in an inconsistent state (blank, frozen frame).
+        let window = Window::builder()
+            .title("TimeAgent — Tasks")
+            .default_width(760)
+            .default_height(560)
+            .hide_on_close(true)
+            .build();
 
         let root = GtkBox::new(Orientation::Vertical, 0);
 
@@ -40,11 +49,44 @@ impl TasksWindow {
         active_only.set_active(true);
         let scope = DropDown::from_strings(&["Current sprint", "All"]);
         let refresh = Button::from_icon_name("view-refresh-symbolic");
+        refresh.set_tooltip_text(Some("Reload tasks & times"));
+        // Meeting + app actions — the tray menu's items live here too, since the
+        // host menu doesn't render on some desktops (e.g. GNOME AppIndicator).
+        let split_btn = Button::with_label("⏹▶ Split");
+        split_btn.set_tooltip_text(Some("Split the current meeting"));
+        let stop_btn = Button::with_label("⏹ Stop");
+        stop_btn.set_tooltip_text(Some("Stop tracking the current meeting"));
+        let settings_btn = Button::from_icon_name("preferences-system-symbolic");
+        settings_btn.set_tooltip_text(Some("Settings"));
+        let quit_btn = Button::from_icon_name("application-exit-symbolic");
+        quit_btn.set_tooltip_text(Some("Quit TimeAgent"));
         toolbar.append(&search);
         toolbar.append(&active_only);
         toolbar.append(&scope);
+        toolbar.append(&split_btn);
+        toolbar.append(&stop_btn);
         toolbar.append(&refresh);
+        toolbar.append(&settings_btn);
+        toolbar.append(&quit_btn);
         root.append(&toolbar);
+
+        // Wire the action buttons through the shared command pump (main.rs).
+        {
+            let c = cmd.clone();
+            split_btn.connect_clicked(move |_| { let _ = c.send(TrayCmd::Split); });
+        }
+        {
+            let c = cmd.clone();
+            stop_btn.connect_clicked(move |_| { let _ = c.send(TrayCmd::StopTracking); });
+        }
+        {
+            let c = cmd.clone();
+            settings_btn.connect_clicked(move |_| { let _ = c.send(TrayCmd::OpenSettings); });
+        }
+        {
+            let c = cmd.clone();
+            quit_btn.connect_clicked(move |_| { let _ = c.send(TrayCmd::Quit); });
+        }
 
         // list
         let list_box = GtkBox::new(Orientation::Vertical, 6);
@@ -111,7 +153,19 @@ impl TasksWindow {
             self.list_box.append(&self.row(item));
             shown += 1;
         }
-        self.status.set_text(&format!("{} shown", shown));
+        // Tracked-hours summary (the tray menu can't show this on GNOME).
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let (today_h, total_h): (f64, f64) = {
+            let times = self.store.times.lock().unwrap();
+            (
+                times.iter().filter(|t| t.day == today).map(|t| t.hours).sum(),
+                times.iter().map(|t| t.hours).sum(),
+            )
+        };
+        self.status.set_text(&format!(
+            "{} shown   •   Today: {:.2}h   •   Logged (loaded): {:.2}h",
+            shown, today_h, total_h
+        ));
     }
 
     fn row(&self, item: &WorkItem) -> GtkBox {
