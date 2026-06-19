@@ -38,12 +38,20 @@ jobs:
         with:
           tool: cargo-deb,cargo-generate-rpm
 
-      - name: Resolve version
+      - name: Resolve version from tag
         id: ver
         run: |
           VER="${GITHUB_REF#refs/tags/v}"
           echo "version=${VER}" >> "$GITHUB_OUTPUT"
           echo "Resolved version: ${VER}"
+
+      - name: Set crate version to the tag
+        # cargo-deb / cargo-generate-rpm name artifacts from Cargo.toml's version,
+        # not the git tag. Patch the [package] version (the first `version = `
+        # line) so every artifact uses the tagged version.
+        run: |
+          sed -i '0,/^version = /s/^version = .*/version = "${{ steps.ver.outputs.version }}"/' Cargo.toml
+          grep -m1 '^version = ' Cargo.toml
 
       - name: Build release binary
         run: cargo build --release
