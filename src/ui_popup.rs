@@ -41,12 +41,15 @@ pub struct Popup {
     name_lbl: Label,
     status_lbl: Label,
     meeting_box: GtkBox,
+    tracking_box: GtkBox,
+    tracking_lbl: Label,
     today_lbl: Label,
     week_lbl: Label,
     month_lbl: Label,
     month_name: Label,
     footer: Label,
     month_offset: Rc<Cell<i32>>,
+    target: Rc<Cell<(i32, i32)>>,
 }
 
 fn css_once() {
@@ -124,6 +127,22 @@ impl Popup {
         meeting_box.append(&stop_btn);
         root.append(&meeting_box);
 
+        // active task stopwatch (shown only while a task is being tracked)
+        let tracking_box = GtkBox::new(Orientation::Horizontal, 8);
+        tracking_box.add_css_class("ta-card");
+        let tracking_lbl = Label::new(Some(""));
+        tracking_lbl.set_hexpand(true);
+        tracking_lbl.set_halign(Align::Start);
+        let track_stop = Button::with_label("⏹ Stop");
+        track_stop.add_css_class("destructive-action");
+        tracking_box.append(&tracking_lbl);
+        tracking_box.append(&track_stop);
+        root.append(&tracking_box);
+        {
+            let store2 = store.clone();
+            track_stop.connect_clicked(move |_| store2.stop_task());
+        }
+
         // today / week cards
         let cards = GtkBox::new(Orientation::Horizontal, 8);
         cards.set_homogeneous(true);
@@ -177,6 +196,7 @@ impl Popup {
         window.set_child(Some(&root));
 
         let month_offset = Rc::new(Cell::new(0));
+        let target = Rc::new(Cell::new((0, 0)));
         let me = Rc::new(std::cell::RefCell::new(Popup {
             window,
             store: store.clone(),
@@ -184,12 +204,15 @@ impl Popup {
             name_lbl,
             status_lbl,
             meeting_box,
+            tracking_box,
+            tracking_lbl,
             today_lbl,
             week_lbl,
             month_lbl,
             month_name,
             footer,
             month_offset: month_offset.clone(),
+            target: target.clone(),
         }));
 
         // button wiring (route through the shared command pump)
@@ -249,6 +272,15 @@ impl Popup {
             });
         }
 
+        // Once mapped (surface exists), move to the click position (X11 only).
+        {
+            let target = target.clone();
+            me.borrow().window.connect_map(move |w| {
+                let (x, y) = target.get();
+                move_window_x11(w, x, y);
+            });
+        }
+
         // live tick: while visible, refresh the elapsed timer + figures each second
         {
             let me2 = me.clone();
@@ -261,6 +293,19 @@ impl Popup {
         }
 
         me
+    }
+
+    /// Refresh content and present the popup anchored below the click (x, y).
+    pub fn show_at(&self, x: i32, y: i32) {
+        // Center horizontally on the click, drop just below it. (Best-effort:
+        // X11 only; clamped away from the left edge.)
+        let half = self.window.default_width() / 2;
+        self.target.set(((x - half).max(0), y + 6));
+        self.refresh();
+        self.window.present();
+        // If already mapped (reopen), connect_map won't fire — move now too.
+        let (tx, ty) = self.target.get();
+        move_window_x11(&self.window, tx, ty);
     }
 
     fn target_month(&self) -> chrono::NaiveDate {
@@ -294,6 +339,17 @@ impl Popup {
             }
         }
 
+        // active task stopwatch
+        match self.store.tracking_task() {
+            Some((id, d)) => {
+                let name = self.store.item_name(id).unwrap_or_else(|| format!("#{}", id));
+                self.tracking_lbl
+                    .set_text(&format!("⏱ {} · {}", name, fmt_hms(d.as_secs())));
+                self.tracking_box.set_visible(true);
+            }
+            None => self.tracking_box.set_visible(false),
+        }
+
         // hours
         let month = self.target_month();
         let (today, week, m) = self.store.hours_summary(month);
@@ -304,6 +360,21 @@ impl Popup {
             .set_text(&format!("{} {}", month_name(month.month()), month.year()));
 
         self.footer.set_text(&self.store.last_status());
+    }
+}
+
+/// Move a top-level window to absolute screen coords. X11 only — GTK4 has no
+/// window-positioning API; on Wayland the downcast fails and this is a no-op.
+fn move_window_x11(window: &Window, x: i32, y: i32) {
+    let Some(surface) = window.surface() else { return };
+    let Ok(x11surf) = surface.downcast::<gdk4_x11::X11Surface>() else { return };
+    let Some(display) = gtk::gdk::Display::default() else { return };
+    let Ok(x11disp) = display.downcast::<gdk4_x11::X11Display>() else { return };
+    let xid = x11surf.xid();
+    unsafe {
+        let xdisplay = x11disp.xdisplay();
+        x11::xlib::XMoveWindow(xdisplay, xid, x, y);
+        x11::xlib::XFlush(xdisplay);
     }
 }
 

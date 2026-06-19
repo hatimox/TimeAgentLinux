@@ -142,14 +142,13 @@ fn main() {
                         TrayCmd::Refresh => store.refresh(),
                         TrayCmd::Split => watcher::split_with(&wh_inner, &evt_tx),
                         TrayCmd::StopTracking => watcher::stop_with(&wh_inner, &evt_tx),
-                        TrayCmd::ShowPopup => {
+                        TrayCmd::ShowPopup { x, y } => {
                             if popup_win.borrow().is_none() {
                                 let pw = ui_popup::Popup::new(store.clone(), cmd_for_win.clone());
                                 *popup_win.borrow_mut() = Some(pw);
                             }
                             if let Some(pw) = popup_win.borrow().as_ref() {
-                                pw.borrow().refresh();
-                                pw.borrow().window.present();
+                                pw.borrow().show_at(x, y);
                             }
                         }
                         TrayCmd::OpenTasks => {
@@ -203,13 +202,13 @@ impl ksni::Tray for TrayMenu {
     // Activate fires (double-click here) so the tray can open the app window.
     /// Primary action (double-click on the GNOME AppIndicator host): show the
     /// popup — the app's main surface (meeting status, hours, quick actions).
-    fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.cmd.send(TrayCmd::ShowPopup);
+    fn activate(&mut self, x: i32, y: i32) {
+        let _ = self.cmd.send(TrayCmd::ShowPopup { x, y });
     }
     /// Single middle-click on the GNOME AppIndicator host → also show the popup
     /// (a genuine single-click path, since single left-click can't be hooked).
-    fn secondary_activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.cmd.send(TrayCmd::ShowPopup);
+    fn secondary_activate(&mut self, x: i32, y: i32) {
+        let _ = self.cmd.send(TrayCmd::ShowPopup { x, y });
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;

@@ -35,6 +35,8 @@ pub struct Store {
     /// When a meeting is being tracked, the monotonic instant it started — used
     /// for the live elapsed timer in the popup.
     meeting_start: Mutex<Option<Instant>>,
+    /// Manual per-task stopwatch: (item id, started-at). Only one at a time.
+    active_task: Mutex<Option<(i64, Instant)>>,
     last_status: Mutex<String>,
     tx: async_channel::Sender<Update>,
     rt: tokio::runtime::Handle,
@@ -57,6 +59,7 @@ impl Store {
             scope_all: Mutex::new(false),
             in_meeting: Mutex::new(false),
             meeting_start: Mutex::new(None),
+            active_task: Mutex::new(None),
             last_status: Mutex::new(String::new()),
             tx,
             rt,
@@ -117,6 +120,44 @@ impl Store {
             }
         }
         (t, w, m)
+    }
+
+    /// The currently-tracked task and its elapsed time, if any.
+    pub fn tracking_task(&self) -> Option<(i64, std::time::Duration)> {
+        self.active_task.lock().unwrap().map(|(id, start)| (id, start.elapsed()))
+    }
+
+    /// Display name for a loaded work item.
+    pub fn item_name(&self, id: i64) -> Option<String> {
+        self.items.lock().unwrap().iter().find(|i| i.id == id).map(|i| i.name.clone())
+    }
+
+    /// Start the stopwatch on a task. Stops + logs any task already running.
+    pub fn start_task(self: &Arc<Self>, item_id: i64) {
+        self.stop_task();
+        *self.active_task.lock().unwrap() = Some((item_id, Instant::now()));
+        self.notify(Update::Status(format!("Tracking #{}…", item_id)));
+        self.notify(Update::Items); // re-render rows (Start → Stop)
+    }
+
+    /// Stop the stopwatch and log the elapsed time to that task. `log_time`
+    /// reports "Logged Xh to #id" on success and reloads the time entries.
+    pub fn stop_task(self: &Arc<Self>) {
+        let active = self.active_task.lock().unwrap().take();
+        if let Some((id, start)) = active {
+            let secs = start.elapsed().as_secs_f64();
+            // Round to 0.01h, but log at least 0.01h for any real (>=1s) track.
+            let hours = if secs >= 1.0 {
+                (((secs / 3600.0) * 100.0).round() / 100.0).max(0.01)
+            } else {
+                0.0
+            };
+            if hours > 0.0 {
+                let today = chrono::Local::now().date_naive();
+                self.log_time(id, hours, String::new(), today);
+            }
+            self.notify(Update::Items);
+        }
     }
 
     /// A clone of the update sender, for the watcher-forwarding task.

@@ -4,7 +4,8 @@
 
 #[derive(Clone)]
 pub enum TrayCmd {
-    ShowPopup,
+    /// Show the popup, anchored near the given screen coords (the tray click).
+    ShowPopup { x: i32, y: i32 },
     OpenTasks,
     OpenSettings,
     Split,
