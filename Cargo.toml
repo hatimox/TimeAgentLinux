@@ -30,6 +30,12 @@ iana-time-zone = "0.1"
 name = "timeagent"
 path = "src/main.rs"
 
+# Vendored ksni patched to expose `Tray::item_is_menu` (upstream leaves it
+# hardcoded to false, so left-click hits Activate instead of the menu). See
+# third_party/ksni/src/{lib,service}.rs.
+[patch.crates-io]
+ksni = { path = "third_party/ksni" }
+
 # Smaller, faster release artifacts for packaging.
 [profile.release]
 strip = true

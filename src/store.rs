@@ -31,6 +31,7 @@ pub struct Store {
     pub states: Mutex<HashMap<i64, HashMap<String, Vec<WorkflowState>>>>,
     pub scope_all: Mutex<bool>,
     pub in_meeting: Mutex<bool>,
+    last_status: Mutex<String>,
     tx: async_channel::Sender<Update>,
     rt: tokio::runtime::Handle,
 }
@@ -51,14 +52,31 @@ impl Store {
             states: Mutex::new(HashMap::new()),
             scope_all: Mutex::new(false),
             in_meeting: Mutex::new(false),
+            last_status: Mutex::new(String::new()),
             tx,
             rt,
         })
     }
 
     fn notify(&self, u: Update) {
+        // Keep the latest status line so UIs can poll it (the update channel has
+        // a single consumer in main, so windows can't subscribe directly).
+        if let Update::Status(s) = &u {
+            *self.last_status.lock().unwrap() = s.clone();
+        }
         // Unbounded channel: try_send only fails if the receiver is gone.
         let _ = self.tx.try_send(u);
+    }
+
+    /// Latest status line (e.g. last error), for windows that poll.
+    pub fn last_status(&self) -> String {
+        self.last_status.lock().unwrap().clone()
+    }
+
+    /// The detected user id + display name (id 0 until detection completes).
+    pub fn user_identity(&self) -> (i64, String) {
+        let s = self.settings.lock().unwrap();
+        (s.my_user_id, s.my_user_name.clone())
     }
 
     /// A clone of the update sender, for the watcher-forwarding task.
@@ -94,18 +112,21 @@ impl Store {
         }
         let Some(client) = self.client() else { return };
         self.rt.spawn(async move {
-            if let Ok((id, name, email)) = client.who_am_i().await {
-                {
-                    let mut s = me.settings.lock().unwrap();
-                    s.my_user_id = id;
-                    s.my_user_name = name;
-                    s.my_user_email = email;
-                    s.save();
+            match client.who_am_i().await {
+                Ok((id, name, email)) => {
+                    {
+                        let mut s = me.settings.lock().unwrap();
+                        s.my_user_id = id;
+                        s.my_user_name = name;
+                        s.my_user_email = email;
+                        s.save();
+                    }
+                    if let Some(c) = me.client.lock().unwrap().as_mut() {
+                        c.my_user_id = id;
+                    }
+                    me.notify(Update::UserInfo);
                 }
-                if let Some(c) = me.client.lock().unwrap().as_mut() {
-                    c.my_user_id = id;
-                }
-                me.notify(Update::UserInfo);
+                Err(e) => me.notify(Update::Status(format!("Sign-in failed: {}", e))),
             }
         });
     }

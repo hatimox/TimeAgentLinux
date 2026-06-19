@@ -189,6 +189,14 @@ impl ksni::Tray for TrayMenu {
         if self.in_meeting.load(std::sync::atomic::Ordering::SeqCst) { "appointment-soon".into() } else { "appointment-new".into() }
     }
     fn title(&self) -> String { "TimeAgent".into() }
+    /// Advertise as menu-only so hosts (e.g. the GNOME/Ubuntu AppIndicator
+    /// extension) open the menu on a single left-click instead of routing the
+    /// click to Activate. Relies on the vendored ksni patch (see Cargo.toml).
+    fn item_is_menu(&self) -> bool { true }
+    /// Double-click still fires Activate on some hosts — open the tasks window.
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.cmd.send(TrayCmd::OpenTasks);
+    }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         let mut items: Vec<ksni::MenuItem<Self>> = vec![];

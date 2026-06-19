@@ -75,6 +75,30 @@ fn account_tab(store: &Arc<Store>, window: &Window) -> GtkBox {
             store.ensure_user();
             store.refresh();
             who2.set_text("Saved — detecting user…");
+
+            // Updates are drained by the main loop, so poll the store here to
+            // reflect detection success/failure rather than hang on the label.
+            let store_poll = store.clone();
+            let who_poll = who2.clone();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+                let (id, name) = store_poll.user_identity();
+                if id != 0 {
+                    who_poll.set_text(&format!("Signed in: {} (id {})", name, id));
+                    return glib::ControlFlow::Break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let st = store_poll.last_status();
+                    let msg = if st.is_empty() {
+                        "Could not detect user — check the URL and token.".to_string()
+                    } else {
+                        format!("Could not detect user — {}", st)
+                    };
+                    who_poll.set_text(&msg);
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
         });
     }
 
