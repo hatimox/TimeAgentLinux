@@ -3,6 +3,19 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// An HTTP error from TP: the status plus TP's own `{"Message": …}` text.
+#[derive(Debug)]
+pub struct TpError {
+    pub status: u16,
+    pub message: String,
+}
+impl std::fmt::Display for TpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {}: {}", self.status, self.message)
+    }
+}
+impl std::error::Error for TpError {}
+
 /// TargetProcess REST client — faithful port of the Electron tpclient.js:
 /// noon-anchored writes, offset-aware day bucketing, manual %20 query encoding,
 /// skip-based pagination (TP caps a page at 1000).
@@ -73,7 +86,12 @@ impl TpClient {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(anyhow!("HTTP {}: {}", status, text.chars().take(200).collect::<String>()));
+            // Prefer TP's own {"Message": …} over the raw body.
+            let detail = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| v.get("Message").and_then(|m| m.as_str()).map(|m| m.to_string()))
+                .unwrap_or_else(|| text.chars().take(200).collect::<String>());
+            return Err(TpError { status: status.as_u16(), message: detail }.into());
         }
         if text.is_empty() { return Ok(json!({})); }
         Ok(serde_json::from_str(&text)?)
@@ -115,12 +133,14 @@ impl TpClient {
     }
 
     pub async fn fetch_all_assigned(&self, current_sprint_only: bool) -> Result<Vec<WorkItem>> {
-        let (tasks, bugs) = tokio::try_join!(
+        let (tasks, bugs, stories) = tokio::try_join!(
             self.fetch_collection("Tasks", current_sprint_only),
-            self.fetch_collection("Bugs", current_sprint_only)
+            self.fetch_collection("Bugs", current_sprint_only),
+            self.fetch_collection("UserStories", current_sprint_only)
         )?;
         let mut all = tasks;
         all.extend(bugs);
+        all.extend(stories);
         all.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         Ok(all)
     }
@@ -130,14 +150,15 @@ impl TpClient {
         if current_sprint_only {
             where_clause.push_str(" and (TeamIteration.IsCurrent eq 'true')");
         }
+        let is_story = collection == "UserStories";
+        // Stories have no parent UserStory field; asking for it fails the query.
+        let include = if is_story {
+            "[Id,Name,EntityState[Id,Name,IsFinal],Project[Name,Process[Id]],TeamIteration[Name]]"
+        } else {
+            "[Id,Name,EntityState[Id,Name,IsFinal],Project[Name,Process[Id]],TeamIteration[Name],UserStory[Id,Name]]"
+        };
         let items = self
-            .get_all(
-                collection,
-                &[
-                    ("where", &where_clause),
-                    ("include", "[Id,Name,EntityState[Id,Name,IsFinal],Project[Name,Process[Id]],TeamIteration[Name],UserStory[Id,Name]]"),
-                ],
-            )
+            .get_all(collection, &[("where", &where_clause), ("include", include)])
             .await?;
         Ok(items
             .iter()
@@ -145,12 +166,18 @@ impl TpClient {
                 let id = it.get("Id")?.as_i64()?;
                 let es = it.get("EntityState").cloned().unwrap_or(json!({}));
                 let project = it.get("Project").cloned().unwrap_or(json!({}));
-                let us = it.get("UserStory").cloned().unwrap_or(json!({}));
+                let name = it.get("Name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // A story is its own group, so it lists alongside its tasks.
+                let us = if is_story {
+                    json!({"Id": id, "Name": name})
+                } else {
+                    it.get("UserStory").cloned().unwrap_or(json!({}))
+                };
                 Some(WorkItem {
                     id,
-                    name: it.get("Name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    name,
                     entity_type: collection.to_string(),
-                    display_type: if collection == "Bugs" { "Bug" } else { "Task" }.to_string(),
+                    display_type: WorkItem::display_type_for(collection).to_string(),
                     state_id: es.get("Id").and_then(|v| v.as_i64()).unwrap_or(0),
                     state_name: es.get("Name").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
                     is_final: es.get("IsFinal").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -168,8 +195,9 @@ impl TpClient {
         let mut out: HashMap<String, Vec<WorkflowState>> = HashMap::new();
         out.insert("Task".into(), vec![]);
         out.insert("Bug".into(), vec![]);
+        out.insert("UserStory".into(), vec![]);
         if process_id == 0 { return Ok(out); }
-        for etype in ["Task", "Bug"] {
+        for etype in ["Task", "Bug", "UserStory"] {
             let where_clause = format!("(Process.Id eq {}) and (EntityType.Name eq '{}')", process_id, etype);
             let obj = match self.get("EntityStates", &[("where", &where_clause), ("include", "[Id,Name,NumericPriority,IsFinal]"), ("take", "200")]).await {
                 Ok(o) => o,

@@ -13,9 +13,11 @@ mod command;
 mod holidays;
 mod mic;
 mod models;
+mod periods;
 mod settings;
 mod store;
 mod tpclient;
+mod ui_day;
 mod ui_popup;
 mod ui_prompt;
 mod ui_settings;
@@ -53,6 +55,7 @@ fn main() {
         let tasks_win: Rc<RefCell<Option<Rc<RefCell<ui_tasks::TasksWindow>>>>> = Rc::new(RefCell::new(None));
         let settings_win: Rc<RefCell<Option<gtk::Window>>> = Rc::new(RefCell::new(None));
         let popup_win: Rc<RefCell<Option<Rc<RefCell<ui_popup::Popup>>>>> = Rc::new(RefCell::new(None));
+        let day_win: Rc<RefCell<Option<Rc<RefCell<ui_day::DayWindow>>>>> = Rc::new(RefCell::new(None));
 
         // Hold the app active with no visible window (tray app). Forget the guard
         // so the hold lasts the whole process — a local `_hold` would drop at the
@@ -103,6 +106,7 @@ fn main() {
         // ---- update receiver: apply updates / open prompt (runs on the main loop) ----
         {
             let tasks_win = tasks_win.clone();
+            let day_win = day_win.clone();
             let store2 = store.clone();
             let wh_inner_busy = wh_inner.clone();
             glib::spawn_future_local(async move {
@@ -112,10 +116,16 @@ fn main() {
                             if let Some(tw) = tasks_win.borrow().as_ref() {
                                 tw.borrow().render();
                             }
+                            if let Some(dw) = day_win.borrow().as_ref() {
+                                dw.borrow().render();
+                            }
                         }
                         Update::Status(_s) => { /* could surface in a window status bar */ }
                         Update::UserInfo => {}
                         Update::MeetingState(_) => {}
+                        Update::LogPrompt { entity_id, title, hours, description, date, error } => {
+                            ui_prompt::log_dialog(store2.clone(), title, entity_id, hours, date, description, error);
+                        }
                         Update::MeetingEnded { start_ms, end_ms } => {
                             ui_prompt::present(store2.clone(), start_ms, end_ms);
                             watcher::clear_busy(&wh_inner_busy);
@@ -132,6 +142,7 @@ fn main() {
             let tasks_win = tasks_win.clone();
             let settings_win = settings_win.clone();
             let popup_win = popup_win.clone();
+            let day_win = day_win.clone();
             let evt_tx = evt_tx_for_actions.clone();
             let wh_inner = wh_inner.clone();
             let cmd_for_win = cmd_tx.clone();
@@ -158,6 +169,14 @@ fn main() {
                             }
                             if let Some(tw) = tasks_win.borrow().as_ref() {
                                 tw.borrow().window.present();
+                            }
+                        }
+                        TrayCmd::OpenDay { offset } => {
+                            if day_win.borrow().is_none() {
+                                *day_win.borrow_mut() = Some(ui_day::DayWindow::new(store.clone()));
+                            }
+                            if let Some(dw) = day_win.borrow().as_ref() {
+                                dw.borrow().show_day(offset);
                             }
                         }
                         TrayCmd::OpenSettings => {

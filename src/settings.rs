@@ -26,6 +26,10 @@ pub struct Settings {
     pub meeting_min_minutes: i64,
     #[serde(rename = "meetingStepMinutes")]
     pub meeting_step_minutes: i64,
+    /// TP rejects time entries without a description. Learned from the first
+    /// such rejection; can also be set by hand in Settings.
+    #[serde(rename = "timeDescriptionRequired")]
+    pub time_description_required: bool,
     pub recurring: Vec<RecurringEntry>,
     #[serde(rename = "dynamicMeetings")]
     pub dynamic_meetings: Vec<DynamicMeeting>,
@@ -52,6 +56,7 @@ impl Default for Settings {
             meetings_task_id: 0,
             meeting_min_minutes: 30,
             meeting_step_minutes: 15,
+            time_description_required: false,
             recurring: vec![],
             dynamic_meetings: vec![],
             days_off: vec![],
