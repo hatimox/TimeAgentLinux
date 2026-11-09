@@ -9,6 +9,7 @@ use std::collections::HashSet;
 const FIXED_CIVIL: &[(u32, u32, &str)] = &[
     (1, 1, "New Year's Day"),
     (1, 11, "Proclamation of Independence"),
+    (1, 14, "Amazigh New Year"),
     (5, 1, "Labour Day"),
     (7, 30, "Throne Day"),
     (8, 14, "Oued Ed-Dahab Day"),
