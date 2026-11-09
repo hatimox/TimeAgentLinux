@@ -2,7 +2,10 @@
 //! meetings, recurring entries, days off. gtk4-rs with a Notebook (tabs).
 
 use crate::models::{DynamicMeeting, RecurringEntry};
+use crate::holidays;
+use crate::settings::ReligiousSlot;
 use crate::store::Store;
+use chrono::Datelike;
 use gtk::prelude::*;
 use gtk::{glib, Align, Box as GtkBox, Button, DropDown, Entry, Label, Notebook, Orientation, PasswordEntry, Window};
 use std::sync::Arc;
@@ -298,6 +301,26 @@ fn daysoff_tab(store: &Arc<Store>) -> GtkBox {
         });
     }
 
+    // Public + religious holidays for a chosen year (Morocco only).
+    let hol_box = GtkBox::new(Orientation::Vertical, 4);
+    let cur_year = chrono::Local::now().year();
+    let year_sp = gtk::SpinButton::with_range(2026.0, 2030.0, 1.0);
+    year_sp.set_value(if (2026..=2030).contains(&cur_year) { cur_year as f64 } else { 2026.0 });
+    hol_box.append(&field("Holiday year", &year_sp));
+    let hol_list = GtkBox::new(Orientation::Vertical, 4);
+    hol_box.append(&hol_list);
+    b.append(&hol_box);
+    hol_box.set_visible(region == "morocco");
+    {
+        let (store, hol_list) = (store.clone(), hol_list.clone());
+        year_sp.connect_value_changed(move |sp| fill_holidays(&store, &hol_list, sp.value() as i32));
+    }
+    fill_holidays(store, &hol_list, year_sp.value() as i32);
+    {
+        let hol_box = hol_box.clone();
+        region_dd.connect_selected_notify(move |dd| hol_box.set_visible(dd.selected() == 1));
+    }
+
     let hours_sp = gtk::SpinButton::with_range(0.0, 24.0, 0.5);
     hours_sp.set_digits(1);
     hours_sp.set_value(hours_per_day);
@@ -322,4 +345,70 @@ fn daysoff_tab(store: &Arc<Store>) -> GtkBox {
     }
     b.append(&save);
     b
+}
+
+/// Upsert the religious slot `key` (saved by the tab's Save button).
+fn upsert_slot(store: &Store, key: &str, on: bool, date: &str) {
+    let mut s = store.settings.lock().unwrap();
+    if let Some(slot) = s.religious_slots.iter_mut().find(|r| r.key == key) {
+        slot.on = on;
+        slot.date = date.to_string();
+    } else {
+        s.religious_slots.push(ReligiousSlot { key: key.to_string(), date: date.to_string(), on });
+    }
+}
+
+/// Rebuild the fixed + religious holiday rows for `year`.
+fn fill_holidays(store: &Arc<Store>, list: &GtkBox, year: i32) {
+    while let Some(c) = list.first_child() {
+        list.remove(&c);
+    }
+    let title = Label::new(Some("Public holidays"));
+    title.set_halign(Align::Start);
+    list.append(&title);
+    for (date, name) in holidays::fixed_holidays_named(year) {
+        let l = Label::new(Some(&format!("{}  {}", date, name)));
+        l.set_halign(Align::Start);
+        l.add_css_class("dim-label");
+        list.append(&l);
+    }
+    let rel_title = Label::new(Some("Religious holidays (estimates \u{2014} confirm/adjust)"));
+    rel_title.set_halign(Align::Start);
+    rel_title.set_margin_top(6);
+    list.append(&rel_title);
+    let days = holidays::religious_days(year);
+    if days.is_empty() {
+        let l = Label::new(Some(&format!("No estimates for {}. Add specific days off above.", year)));
+        l.add_css_class("dim-label");
+        l.set_halign(Align::Start);
+        list.append(&l);
+        return;
+    }
+    for day in days {
+        let (on, date) = {
+            let s = store.settings.lock().unwrap();
+            match s.religious_slots.iter().find(|r| r.key == day.key) {
+                Some(slot) => (slot.on, if slot.date.is_empty() { day.estimate.clone() } else { slot.date.clone() }),
+                None => (true, day.estimate.clone()),
+            }
+        };
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        let sw = gtk::Switch::builder().active(on).valign(Align::Center).build();
+        let label = Label::new(Some(&day.label));
+        label.set_halign(Align::Start);
+        label.set_hexpand(true);
+        let entry = Entry::builder().text(&date).width_chars(11).max_width_chars(11).build();
+        row.append(&sw);
+        row.append(&label);
+        row.append(&entry);
+        list.append(&row);
+        {
+            let (store, key, entry) = (store.clone(), day.key.clone(), entry.clone());
+            sw.connect_active_notify(move |sw| upsert_slot(&store, &key, sw.is_active(), entry.text().as_str()));
+        }
+        {
+            let (store, key, sw) = (store.clone(), day.key.clone(), sw.clone());
+            entry.connect_changed(move |e| upsert_slot(&store, &key, sw.is_active(), e.text().as_str()));
+        }
+    }
 }

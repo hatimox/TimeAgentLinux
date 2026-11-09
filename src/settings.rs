@@ -6,6 +6,17 @@ use std::path::PathBuf;
 const KEYRING_SERVICE: &str = "net.omnevo.timeagent";
 const KEYRING_ACCOUNT: &str = "tp-token";
 
+/// A religious-holiday day the user confirmed/adjusted: `key` is
+/// "year|name|idx", `date` the (possibly edited) YYYY-MM-DD, `on` whether it
+/// counts as a day off. Same JSON shape as the Mac app.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReligiousSlot {
+    pub key: String,
+    pub date: String,
+    pub on: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -41,6 +52,8 @@ pub struct Settings {
     #[serde(rename = "weeklyOff")]
     pub weekly_off: Vec<i64>,
     pub region: String,
+    #[serde(rename = "religiousSlots")]
+    pub religious_slots: Vec<ReligiousSlot>,
 
     // Not persisted to JSON — the token comes from the keyring.
     #[serde(skip)]
@@ -66,6 +79,7 @@ impl Default for Settings {
             days_off: vec![],
             weekly_off: vec![0, 6],
             region: "none".into(),
+            religious_slots: vec![],
             token: String::new(),
         }
     }
