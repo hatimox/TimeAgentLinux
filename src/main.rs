@@ -16,6 +16,7 @@ mod models;
 mod periods;
 mod settings;
 mod store;
+mod target_value;
 mod tpclient;
 mod ui_day;
 mod ui_popup;

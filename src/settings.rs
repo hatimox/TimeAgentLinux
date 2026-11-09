@@ -30,6 +30,9 @@ pub struct Settings {
     /// such rejection; can also be set by hand in Settings.
     #[serde(rename = "timeDescriptionRequired")]
     pub time_description_required: bool,
+    /// Expected hours per working day; drives the Day / Week / Month targets.
+    #[serde(rename = "hoursPerDay")]
+    pub hours_per_day: f64,
     pub recurring: Vec<RecurringEntry>,
     #[serde(rename = "dynamicMeetings")]
     pub dynamic_meetings: Vec<DynamicMeeting>,
@@ -57,6 +60,7 @@ impl Default for Settings {
             meeting_min_minutes: 30,
             meeting_step_minutes: 15,
             time_description_required: false,
+            hours_per_day: 8.0,
             recurring: vec![],
             dynamic_meetings: vec![],
             days_off: vec![],

@@ -360,9 +360,10 @@ impl TasksWindow {
     fn update_footer(&self) {
         let (d, w, m) = (self.day_off.get(), self.week_off.get(), self.month_off.get());
         let t = self.store.totals(d, w, m);
-        self.day_lbl.set_text(&format!("{} {:.2}h", t.day_label, t.day));
-        self.week_lbl.set_text(&format!("{} {:.2}h", t.week_label, t.week));
-        self.month_lbl.set_text(&format!("{} {:.2}h", t.month_label, t.month));
+        use crate::target_value::apply;
+        apply(&self.day_lbl, &format!("{} ", t.day_label), t.day, t.day_target, "off");
+        apply(&self.week_lbl, &format!("{} ", t.week_label), t.week, t.week_target, "off");
+        apply(&self.month_lbl, &format!("{} ", t.month_label), t.month, t.month_target, "off");
         self.day_next.set_sensitive(d < 0);
         self.week_next.set_sensitive(w < 0);
         self.month_next.set_sensitive(m < 0);

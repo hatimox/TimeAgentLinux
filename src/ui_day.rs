@@ -102,7 +102,8 @@ impl DayWindow {
         let mut entries: Vec<_> = self.store.times.lock().unwrap().iter().filter(|t| t.day == day).cloned().collect();
         entries.sort_by(|a, b| b.id.cmp(&a.id));
         let total: f64 = entries.iter().map(|e| e.hours).sum();
-        self.total.set_text(&format!("{:.2}h", total));
+        let target = self.store.totals(off, 0, 0).day_target;
+        crate::target_value::apply(&self.total, "", total, target, "Day off");
 
         if entries.is_empty() {
             let l = Label::new(Some(if off == 0 { "No time logged today" } else { "No time logged on this day" }));
