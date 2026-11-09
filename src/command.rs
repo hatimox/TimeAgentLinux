@@ -8,6 +8,8 @@ pub enum TrayCmd {
     ShowPopup { x: i32, y: i32 },
     OpenTasks,
     OpenSettings,
+    /// Open the day-entries window on a day (0 = today, -1 = yesterday, …).
+    OpenDay { offset: i32 },
     Split,
     StopTracking,
     Refresh,

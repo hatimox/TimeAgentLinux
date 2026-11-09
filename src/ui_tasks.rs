@@ -5,7 +5,6 @@
 use crate::command::TrayCmd;
 use crate::models::WorkItem;
 use crate::store::Store;
-use chrono::Datelike;
 use gtk::prelude::*;
 use gtk::{glib, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Label, Orientation,
           PolicyType, ScrolledWindow, SearchEntry, StringList, Window};
@@ -22,6 +21,10 @@ const CSS: &str = "
 .ta-badge { color: white; font-weight: bold; font-size: 10px; padding: 2px 8px; border-radius: 6px; }
 .ta-badge-task { background: #2d7dd2; }
 .ta-badge-bug { background: #d2452d; }
+.ta-badge-story { background: #8a4fd2; }
+.ta-summary { background: alpha(@theme_fg_color, 0.05); padding: 6px 12px; }
+.ta-chip { background: alpha(@theme_fg_color, 0.08); border-radius: 10px; padding: 1px 8px; font-size: 12px; }
+.ta-err { color: #d23b3b; font-size: 12px; }
 .ta-title { font-weight: bold; font-size: 14px; }
 .ta-pill { background: alpha(#3d7de8, 0.18); border-radius: 8px; padding: 1px 8px; font-size: 11px; }
 .ta-link { background: none; border: none; box-shadow: none; color: #3d7de8; padding: 0 2px; min-height: 0; }
@@ -56,8 +59,19 @@ pub struct TasksWindow {
     scope: DropDown,
     status_filter: DropDown,
     status_model: StringList,
+    type_filter: DropDown,
     sort: DropDown,
+    summary: GtkBox,
     status: Label,
+    day_lbl: Label,
+    week_lbl: Label,
+    month_lbl: Label,
+    day_next: Button,
+    week_next: Button,
+    month_next: Button,
+    day_off: Rc<Cell<i32>>,
+    week_off: Rc<Cell<i32>>,
+    month_off: Rc<Cell<i32>>,
     /// The Stop button of the currently-tracked row, so a 1s tick can update
     /// its elapsed label without re-rendering the whole list (which would wipe
     /// the per-row note/hrs inputs).
@@ -88,12 +102,14 @@ impl TasksWindow {
         toolbar.set_margin_start(8);
         toolbar.set_margin_end(8);
         let search = SearchEntry::new();
-        search.set_placeholder_text(Some("Search tasks & bugs (name or #id)…"));
+        search.set_placeholder_text(Some("Search stories, tasks & bugs (name or #id)…"));
         search.set_hexpand(true);
         let active_only = CheckButton::with_label("Active only");
         active_only.set_active(true);
         let scope = DropDown::from_strings(&["Current sprint", "All"]);
         scope.set_tooltip_text(Some("Sprint scope"));
+        let type_filter = DropDown::from_strings(&["All types", "User Story", "Task", "Bug"]);
+        type_filter.set_tooltip_text(Some("Filter by type"));
         let status_model = StringList::new(&["All statuses"]);
         let status_filter = DropDown::new(Some(status_model.clone()), gtk::Expression::NONE);
         status_filter.set_tooltip_text(Some("Filter by status"));
@@ -106,6 +122,7 @@ impl TasksWindow {
         toolbar.append(&search);
         toolbar.append(&active_only);
         toolbar.append(&scope);
+        toolbar.append(&type_filter);
         toolbar.append(&status_filter);
         toolbar.append(&sort);
         toolbar.append(&refresh);
@@ -118,6 +135,11 @@ impl TasksWindow {
             settings_btn.connect_clicked(move |_| { let _ = c.send(TrayCmd::OpenSettings); });
         }
 
+        // sprint summary strip (rebuilt on every render)
+        let summary = GtkBox::new(Orientation::Horizontal, 8);
+        summary.add_css_class("ta-summary");
+        root.append(&summary);
+
         // list
         let list_box = GtkBox::new(Orientation::Vertical, 6);
         list_box.set_margin_start(8);
@@ -125,13 +147,38 @@ impl TasksWindow {
         let scroller = ScrolledWindow::builder().vexpand(true).hscrollbar_policy(PolicyType::Never).child(&list_box).build();
         root.append(&scroller);
 
-        // footer
+        // footer: status + Day / Week / Month totals, each with its own ‹ ›
+        let footer = GtkBox::new(Orientation::Horizontal, 12);
+        footer.set_margin_start(8);
+        footer.set_margin_end(8);
+        footer.set_margin_top(4);
+        footer.set_margin_bottom(6);
         let status = Label::new(None);
         status.set_halign(Align::Start);
-        status.set_margin_start(8);
-        status.set_margin_top(4);
-        status.set_margin_bottom(6);
-        root.append(&status);
+        status.set_hexpand(true);
+        footer.append(&status);
+        let day_off = Rc::new(Cell::new(0));
+        let week_off = Rc::new(Cell::new(0));
+        let month_off = Rc::new(Cell::new(0));
+        let (day_box, day_lbl, day_prev, day_next) = stepper(&day_off);
+        let (week_box, week_lbl, week_prev, week_next) = stepper(&week_off);
+        let (month_box, month_lbl, month_prev, month_next) = stepper(&month_off);
+        footer.append(&day_box);
+        footer.append(&week_box);
+        footer.append(&month_box);
+        root.append(&footer);
+
+        // Clicking the day total opens that day's entries.
+        {
+            let (c, off) = (cmd.clone(), day_off.clone());
+            let click = gtk::GestureClick::new();
+            click.connect_released(move |_, _, _, _| {
+                let _ = c.send(TrayCmd::OpenDay { offset: off.get() });
+            });
+            day_lbl.add_controller(click);
+            day_lbl.set_tooltip_text(Some("Show this day's entries"));
+            day_lbl.set_cursor_from_name(Some("pointer"));
+        }
 
         window.set_child(Some(&root));
 
@@ -144,8 +191,19 @@ impl TasksWindow {
             scope,
             status_filter,
             status_model,
+            type_filter,
             sort,
+            summary,
             status,
+            day_lbl,
+            week_lbl,
+            month_lbl,
+            day_next,
+            week_next,
+            month_next,
+            day_off: day_off.clone(),
+            week_off: week_off.clone(),
+            month_off: month_off.clone(),
             track_btn: RefCell::new(None),
             rendering: Cell::new(false),
         }));
@@ -162,6 +220,32 @@ impl TasksWindow {
         {
             let me2 = me.clone();
             me.borrow().status_filter.connect_selected_notify(move |_| me2.borrow().render());
+        }
+        {
+            let me2 = me.clone();
+            me.borrow().type_filter.connect_selected_notify(move |_| me2.borrow().render());
+        }
+        // footer steppers only refresh the totals (not the whole list)
+        let (day_next_b, week_next_b, month_next_b) = {
+            let w = me.borrow();
+            (w.day_next.clone(), w.week_next.clone(), w.month_next.clone())
+        };
+        for (btn, off, delta) in [
+            (day_prev, day_off.clone(), -1),
+            (week_prev, week_off.clone(), -1),
+            (month_prev, month_off.clone(), -1),
+            (day_next_b, day_off.clone(), 1),
+            (week_next_b, week_off.clone(), 1),
+            (month_next_b, month_off.clone(), 1),
+        ] {
+            let me2 = me.clone();
+            btn.connect_clicked(move |_| {
+                let n = off.get() + delta;
+                if n <= 0 {
+                    off.set(n);
+                }
+                me2.borrow().update_footer();
+            });
         }
         {
             let me2 = me.clone();
@@ -221,6 +305,13 @@ impl TasksWindow {
             .string(self.status_filter.selected())
             .map(|g| g.to_string());
         let status_on = status_sel.as_deref().map(|s| s != "All statuses").unwrap_or(false);
+        let type_sel = match self.type_filter.selected() {
+            1 => Some("User Story"),
+            2 => Some("Task"),
+            3 => Some("Bug"),
+            _ => None,
+        };
+        self.render_summary(&items_all);
 
         let mut items: Vec<WorkItem> = items_all
             .into_iter()
@@ -235,6 +326,11 @@ impl TasksWindow {
                 }
                 if status_on && Some(item.state_name.as_str()) != status_sel.as_deref() {
                     return false;
+                }
+                if let Some(t) = type_sel {
+                    if item.display_type != t {
+                        return false;
+                    }
                 }
                 true
             })
@@ -254,19 +350,43 @@ impl TasksWindow {
             shown += 1;
         }
 
-        // Tracked-hours summary (Today / this week / this month).
-        let month = chrono::Local::now().date_naive().with_day(1).unwrap();
-        let (today_h, week_h, month_h) = self.store.hours_summary(month);
-        self.status.set_text(&format!(
-            "{} shown      Today {:.2}h      Week {:.2}h      {} {:.2}h",
-            shown,
-            today_h,
-            week_h,
-            month.format("%B %Y"),
-            month_h
-        ));
+        self.status.set_text(&format!("{} shown", shown));
+        self.update_footer();
 
         self.rendering.set(false);
+    }
+
+    /// Day / Week / Month totals for the footer's current offsets.
+    fn update_footer(&self) {
+        let (d, w, m) = (self.day_off.get(), self.week_off.get(), self.month_off.get());
+        let t = self.store.totals(d, w, m);
+        self.day_lbl.set_text(&format!("{} {:.2}h", t.day_label, t.day));
+        self.week_lbl.set_text(&format!("{} {:.2}h", t.week_label, t.week));
+        self.month_lbl.set_text(&format!("{} {:.2}h", t.month_label, t.month));
+        self.day_next.set_sensitive(d < 0);
+        self.week_next.set_sensitive(w < 0);
+        self.month_next.set_sensitive(m < 0);
+    }
+
+    /// Open/done counts per type plus my all-time hours on those items, for the
+    /// selected sprint scope (ignores search, type, status and Active filters).
+    fn render_summary(&self, items: &[WorkItem]) {
+        while let Some(c) = self.summary.first_child() {
+            self.summary.remove(&c);
+        }
+        let scope = if self.scope.selected() == 1 { "All sprints" } else { "Current sprint" };
+        let head = Label::new(Some(scope));
+        head.add_css_class("ta-title");
+        self.summary.append(&head);
+        self.summary.append(&summary_chip(items, "User Stories", |i| i.is_story()));
+        self.summary.append(&summary_chip(items, "Tasks", |i| !i.is_story() && !i.is_bug()));
+        self.summary.append(&summary_chip(items, "Bugs", |i| i.is_bug()));
+        let hours: f64 = items.iter().map(|i| self.store.hours_for(i.id)).sum();
+        let h = Label::new(Some(&format!("⏱ {:.2}h logged", hours)));
+        h.set_hexpand(true);
+        h.set_halign(Align::End);
+        h.set_tooltip_text(Some("All time you logged on these items"));
+        self.summary.append(&h);
     }
 
     /// Rebuild the status dropdown from the statuses present in `items`,
@@ -312,9 +432,9 @@ impl TasksWindow {
 
         // line 1: badge + name + start/stop + hours
         let l1 = GtkBox::new(Orientation::Horizontal, 8);
-        let badge = Label::new(Some(&item.display_type));
+        let badge = Label::new(Some(&item.display_type.to_uppercase()));
         badge.add_css_class("ta-badge");
-        badge.add_css_class(if item.entity_type == "Bugs" { "ta-badge-bug" } else { "ta-badge-task" });
+        badge.add_css_class(if item.is_story() { "ta-badge-story" } else if item.is_bug() { "ta-badge-bug" } else { "ta-badge-task" });
         badge.set_valign(Align::Center);
         let name = Label::new(Some(&item.name));
         name.add_css_class("ta-title");
@@ -390,7 +510,7 @@ impl TasksWindow {
             id_link.connect_clicked(move |_| store.open_in_tp(id));
         }
         l2.append(&id_link);
-        if item.us_id != 0 {
+        if item.us_id != 0 && item.us_id != item.id {
             let us = Button::with_label(&format!("US #{} ↗", item.us_id));
             us.add_css_class("ta-link");
             us.add_css_class("flat");
@@ -442,23 +562,61 @@ impl TasksWindow {
         let hrs = Entry::builder().placeholder_text("hrs").max_width_chars(5).build();
         let date = Entry::builder().placeholder_text("YYYY-MM-DD").build();
         date.set_text(&chrono::Local::now().format("%Y-%m-%d").to_string());
-        let note = Entry::builder().placeholder_text("optional note").hexpand(true).build();
+        let required = self.store.settings.lock().unwrap().time_description_required;
+        let note = Entry::builder().placeholder_text(note_placeholder(required)).hexpand(true).build();
         let log = Button::with_label("Log");
         log.add_css_class("suggested-action");
+        let err = Label::new(None);
+        err.add_css_class("ta-err");
+        err.set_halign(Align::Start);
+        err.set_xalign(0.0);
+        err.set_wrap(true);
+        err.set_selectable(true);
+        err.set_visible(false);
+        let busy = Rc::new(Cell::new(false));
+        sync_log_btn(&store, &note, &log, &busy);
+        {
+            let (store, note2, log2, busy2) = (store.clone(), note.clone(), log.clone(), busy.clone());
+            note.connect_changed(move |_| sync_log_btn(&store, &note2, &log2, &busy2));
+        }
         {
             let store = store.clone();
             let id = item.id;
-            let (hrs2, date2, note2) = (hrs.clone(), date.clone(), note.clone());
-            log.connect_clicked(move |_| {
+            let (hrs2, date2, note2, err2, busy2) = (hrs.clone(), date.clone(), note.clone(), err.clone(), busy.clone());
+            log.connect_clicked(move |btn| {
                 let h: f64 = hrs2.text().replace(',', ".").parse().unwrap_or(0.0);
                 if h <= 0.0 {
+                    err2.set_text("Enter hours greater than 0.");
+                    err2.set_visible(true);
                     return;
                 }
                 let d = chrono::NaiveDate::parse_from_str(date2.text().as_str(), "%Y-%m-%d")
                     .unwrap_or_else(|_| chrono::Local::now().date_naive());
-                store.log_time(id, h, note2.text().to_string(), d);
-                hrs2.set_text("");
-                note2.set_text("");
+                busy2.set(true);
+                btn.set_sensitive(false);
+                err2.set_visible(false);
+                let rx = store.log_time(id, h, note2.text().to_string(), d);
+                let (store, btn, hrs, note, err, busy) =
+                    (store.clone(), btn.clone(), hrs2.clone(), note2.clone(), err2.clone(), busy2.clone());
+                // Clear the fields only once TP accepts the entry; on failure
+                // they stay filled and the error shows under the row.
+                glib::spawn_future_local(async move {
+                    match rx.recv().await {
+                        Ok(Ok(())) => {
+                            hrs.set_text("");
+                            note.set_text("");
+                        }
+                        Ok(Err(e)) => {
+                            err.set_text(&e);
+                            err.set_visible(true);
+                            let req = store.settings.lock().unwrap().time_description_required;
+                            note.set_placeholder_text(Some(note_placeholder(req)));
+                        }
+                        Err(_) => {}
+                    }
+                    busy.set(false);
+                    sync_log_btn(&store, &note, &btn, &busy);
+                });
             });
         }
         l3.append(&hrs);
@@ -466,9 +624,46 @@ impl TasksWindow {
         l3.append(&note);
         l3.append(&log);
         row.append(&l3);
+        row.append(&err);
 
         row
     }
+}
+
+/// "Name: N open · M done" chip for the items matching `pred`.
+fn summary_chip(items: &[WorkItem], name: &str, pred: fn(&WorkItem) -> bool) -> Label {
+    let of: Vec<&WorkItem> = items.iter().filter(|i| pred(*i)).collect();
+    let done = of.iter().filter(|i| i.is_final).count();
+    let l = Label::new(Some(&format!("{}: {} open · {} done", name, of.len() - done, done)));
+    l.add_css_class("ta-chip");
+    l.set_tooltip_text(Some(&format!("{} {} assigned to you", of.len(), name.to_lowercase())));
+    l
+}
+
+fn note_placeholder(required: bool) -> &'static str {
+    if required { "Description (required)" } else { "optional note" }
+}
+
+/// Log is disabled while saving, or when a description is required but empty.
+fn sync_log_btn(store: &Arc<Store>, note: &Entry, btn: &Button, busy: &Rc<Cell<bool>>) {
+    let required = store.settings.lock().unwrap().time_description_required;
+    btn.set_sensitive(!busy.get() && !(required && note.text().trim().is_empty()));
+}
+
+/// ‹ label › stepper for a footer total: (box, label, prev, next).
+fn stepper(_off: &Rc<Cell<i32>>) -> (GtkBox, Label, Button, Button) {
+    let b = GtkBox::new(Orientation::Horizontal, 2);
+    let prev = Button::from_icon_name("go-previous-symbolic");
+    prev.add_css_class("flat");
+    let next = Button::from_icon_name("go-next-symbolic");
+    next.add_css_class("flat");
+    next.set_sensitive(false);
+    let l = Label::new(None);
+    l.add_css_class("ta-foot-fig");
+    b.append(&prev);
+    b.append(&l);
+    b.append(&next);
+    (b, l, prev, next)
 }
 
 fn fmt_hms(secs: u64) -> String {

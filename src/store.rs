@@ -8,7 +8,7 @@ use crate::models::*;
 use crate::settings::Settings;
 use crate::tpclient::TpClient;
 use anyhow::Result;
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -22,7 +22,12 @@ pub enum Update {
     UserInfo,
     MeetingEnded { start_ms: i64, end_ms: i64 },
     MeetingState(bool),
+    /// Open the hours + description dialog (timer stop that needs a description
+    /// or whose first attempt failed).
+    LogPrompt { entity_id: i64, title: String, hours: f64, description: String, date: NaiveDate, error: Option<String> },
 }
+
+pub const DESCRIPTION_REQUIRED_MSG: &str = "TargetProcess requires a description for time entries.";
 
 pub struct Store {
     pub settings: Mutex<Settings>,
@@ -98,28 +103,21 @@ impl Store {
         self.meeting_start.lock().unwrap().map(|s| s.elapsed())
     }
 
-    /// Logged hours summed over (today, this ISO week, the given month), from the
-    /// currently-loaded time entries. `month` is a NaiveDate in the target month.
-    pub fn hours_summary(&self, month: NaiveDate) -> (f64, f64, f64) {
-        let today = chrono::Local::now().date_naive();
-        let week = today.iso_week();
+    /// Today in the configured timezone (what the totals bucket against).
+    pub fn today(&self) -> NaiveDate {
+        let off = chrono::FixedOffset::east_opt(self.tz_off() * 60).unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
+        chrono::Utc::now().with_timezone(&off).date_naive()
+    }
+
+    /// Day / week / month totals, each shifted back by its own offset.
+    pub fn totals(&self, day_off: i32, week_off: i32, month_off: i32) -> crate::periods::Totals {
         let times = self.times.lock().unwrap();
-        let mut t = 0.0;
-        let mut w = 0.0;
-        let mut m = 0.0;
-        for e in times.iter() {
-            let Ok(d) = NaiveDate::parse_from_str(&e.day, "%Y-%m-%d") else { continue };
-            if d == today {
-                t += e.hours;
-            }
-            if d.iso_week() == week {
-                w += e.hours;
-            }
-            if d.year() == month.year() && d.month() == month.month() {
-                m += e.hours;
-            }
-        }
-        (t, w, m)
+        crate::periods::compute(&times, self.today(), day_off, week_off, month_off)
+    }
+
+    /// Surface a status line to windows that poll `last_status`.
+    pub fn set_status(&self, s: String) {
+        self.notify(Update::Status(s));
     }
 
     /// The currently-tracked task and its elapsed time, if any.
@@ -154,7 +152,24 @@ impl Store {
             };
             if hours > 0.0 {
                 let today = chrono::Local::now().date_naive();
-                self.log_time(id, hours, String::new(), today);
+                let name = self.item_name(id).unwrap_or_else(|| format!("#{}", id));
+                let title = format!("Log {:.2}h to “{}”", hours, name);
+                let prompt = move |error: Option<String>| Update::LogPrompt {
+                    entity_id: id, title: title.clone(), hours, description: name.clone(), date: today, error,
+                };
+                // When a description is required, or the save fails, a dialog
+                // (prefilled with the task name) stays up until saved/discarded.
+                if self.settings.lock().unwrap().time_description_required {
+                    self.notify(prompt(None));
+                } else {
+                    let rx = self.log_time(id, hours, String::new(), today);
+                    let me = self.clone();
+                    self.rt.spawn(async move {
+                        if let Ok(Err(e)) = rx.recv().await {
+                            me.notify(prompt(Some(e)));
+                        }
+                    });
+                }
             }
             self.notify(Update::Items);
         }
@@ -239,19 +254,53 @@ impl Store {
         self.times.lock().unwrap().iter().filter(|t| t.item_id == item_id).map(|t| t.hours).sum()
     }
 
-    pub fn log_time(self: &Arc<Self>, entity_id: i64, hours: f64, description: String, date: NaiveDate) {
-        let Some(client) = self.client() else { return };
+    /// Log a time entry. The returned receiver yields `Ok(())` once saved, or
+    /// the error text to show; callers keep their form open until it is `Ok`.
+    /// Callers that don't care can drop it.
+    pub fn log_time(self: &Arc<Self>, entity_id: i64, hours: f64, description: String, date: NaiveDate) -> async_channel::Receiver<Result<(), String>> {
+        let (tx, rx) = async_channel::bounded(1);
+        let Some(client) = self.client() else {
+            let _ = tx.try_send(Err("TargetProcess is not configured".to_string()));
+            return rx;
+        };
+        let desc = description.trim().to_string();
+        if desc.is_empty() && self.settings.lock().unwrap().time_description_required {
+            let _ = tx.try_send(Err(DESCRIPTION_REQUIRED_MSG.to_string()));
+            return rx;
+        }
         let off = self.tz_off();
         let me = self.clone();
         self.rt.spawn(async move {
-            match client.log_time(entity_id, hours, &description, date, off).await {
+            let res = match client.log_time(entity_id, hours, &desc, date, off).await {
                 Ok(_) => {
                     me.notify(Update::Status(format!("Logged {:.2}h to #{}", hours, entity_id)));
                     me.reload_times().await;
+                    Ok(())
                 }
-                Err(e) => me.notify(Update::Status(format!("Log failed: {}", e))),
-            }
+                Err(e) => {
+                    let m = if me.note_description_requirement(&e) { DESCRIPTION_REQUIRED_MSG.to_string() } else { e.to_string() };
+                    me.notify(Update::Status(format!("Log failed: {}", m)));
+                    Err(m)
+                }
+            };
+            let _ = tx.send(res).await;
         });
+        rx
+    }
+
+    /// If TP rejected a time entry for a missing description, remember that (so
+    /// every form asks for one from now on) and return true.
+    pub fn note_description_requirement(&self, e: &anyhow::Error) -> bool {
+        let Some(te) = e.downcast_ref::<crate::tpclient::TpError>() else { return false };
+        if te.status != 400 || !te.message.to_lowercase().contains("description") {
+            return false;
+        }
+        let mut s = self.settings.lock().unwrap();
+        if !s.time_description_required {
+            s.time_description_required = true;
+            s.save();
+        }
+        true
     }
 
     pub fn update_time(self: &Arc<Self>, time_id: i64, hours: f64, description: String, day: String) {
@@ -265,7 +314,10 @@ impl Store {
                     me.notify(Update::Status("Time entry updated".into()));
                     me.reload_times().await;
                 }
-                Err(e) => me.notify(Update::Status(format!("Save failed: {}", e))),
+                Err(e) => {
+                    let m = if me.note_description_requirement(&e) { DESCRIPTION_REQUIRED_MSG.to_string() } else { e.to_string() };
+                    me.notify(Update::Status(format!("Save failed: {}", m)));
+                }
             }
         });
     }
@@ -296,7 +348,7 @@ impl Store {
     /// Workflow states for an item's process+type (cached). Synchronous read of
     /// the cache; fetches in the background and notifies if missing.
     pub fn states_for(self: &Arc<Self>, item: &WorkItem) -> Vec<WorkflowState> {
-        let key = if item.entity_type == "Bugs" { "Bug" } else { "Task" };
+        let key = item.state_key();
         if let Some(byproc) = self.states.lock().unwrap().get(&item.process_id) {
             if let Some(v) = byproc.get(key) {
                 return v.clone();
@@ -369,9 +421,19 @@ impl Store {
                 continue;
             }
             logged.insert(k, true);
+            // TP may require a description: label, else the task name.
+            let desc = if !r.label.trim().is_empty() {
+                r.label.clone()
+            } else {
+                self.item_name(r.task_id).unwrap_or_else(|| "Recurring time".to_string())
+            };
             let c = client.clone();
+            let me = self.clone();
             self.rt.spawn(async move {
-                let _ = c.log_time(r.task_id, r.hours, "", today, off).await;
+                if let Err(e) = c.log_time(r.task_id, r.hours, &desc, today, off).await {
+                    me.note_description_requirement(&e);
+                    me.notify(Update::Status(format!("Recurring log failed: {}", e)));
+                }
             });
         }
         if let Ok(j) = serde_json::to_string_pretty(&logged) {
