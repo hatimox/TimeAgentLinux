@@ -111,8 +111,19 @@ impl Store {
 
     /// Day / week / month totals, each shifted back by its own offset.
     pub fn totals(&self, day_off: i32, week_off: i32, month_off: i32) -> crate::periods::Totals {
+        // Clone first so the settings lock is not held while locking times.
+        let s = self.settings.lock().unwrap().clone();
+        let cache: std::cell::RefCell<HashMap<i32, std::collections::HashSet<String>>> = Default::default();
+        let is_working = |day: &str, weekday: u32| {
+            if s.weekly_off.contains(&(weekday as i64)) {
+                return false;
+            }
+            let year: i32 = day.get(..4).and_then(|y| y.parse().ok()).unwrap_or(0);
+            let mut c = cache.borrow_mut();
+            !c.entry(year).or_insert_with(|| holidays::days_off_for_year(&s, year)).contains(day)
+        };
         let times = self.times.lock().unwrap();
-        crate::periods::compute(&times, self.today(), day_off, week_off, month_off)
+        crate::periods::compute(&times, self.today(), (day_off, week_off, month_off), s.hours_per_day, is_working)
     }
 
     /// Surface a status line to windows that poll `last_status`.

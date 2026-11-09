@@ -255,9 +255,9 @@ fn recurring_tab(store: &Arc<Store>) -> GtkBox {
 fn daysoff_tab(store: &Arc<Store>) -> GtkBox {
     let b = GtkBox::new(Orientation::Vertical, 6);
     b.set_margin_top(12); b.set_margin_start(12); b.set_margin_end(12);
-    let (region, weekly, days) = {
+    let (region, weekly, days, hours_per_day) = {
         let s = store.settings.lock().unwrap();
-        (s.region.clone(), s.weekly_off.clone(), s.days_off.clone())
+        (s.region.clone(), s.weekly_off.clone(), s.days_off.clone(), s.hours_per_day)
     };
     let region_dd = DropDown::from_strings(&["none", "morocco"]);
     region_dd.set_selected(if region == "morocco" { 1 } else { 0 });
@@ -298,12 +298,23 @@ fn daysoff_tab(store: &Arc<Store>) -> GtkBox {
         });
     }
 
+    let hours_sp = gtk::SpinButton::with_range(0.0, 24.0, 0.5);
+    hours_sp.set_digits(1);
+    hours_sp.set_value(hours_per_day);
+    b.append(&field("Hours per working day", &hours_sp));
+    let hours_hint = Label::new(Some("Targets on the Day / Week / Month totals: working days x this. Days off and holidays don't count."));
+    hours_hint.add_css_class("dim-label");
+    hours_hint.set_halign(Align::Start);
+    hours_hint.set_wrap(true);
+    b.append(&hours_hint);
+
     let save = Button::with_label("Save");
     save.add_css_class("suggested-action");
     {
         let store = store.clone();
         save.connect_clicked(move |_| {
             let mut s = store.settings.lock().unwrap();
+            s.hours_per_day = hours_sp.value();
             s.region = if region_dd.selected() == 1 { "morocco".into() } else { "none".into() };
             s.weekly_off = checks.iter().enumerate().filter(|(_, c)| c.is_active()).map(|(i, _)| i as i64).collect();
             s.save();

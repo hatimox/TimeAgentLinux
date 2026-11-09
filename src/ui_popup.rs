@@ -398,11 +398,12 @@ impl Popup {
         // hours
         let (d, w, m) = (self.day_offset.get(), self.week_offset.get(), self.month_offset.get());
         let t = self.store.totals(d, w, m);
-        self.day_lbl.set_text(&format!("{:.2}h", t.day));
+        use crate::target_value::apply;
+        apply(&self.day_lbl, "", t.day, t.day_target, "Day off");
         self.day_period.set_text(&t.day_label);
-        self.week_lbl.set_text(&format!("{:.2}h", t.week));
+        apply(&self.week_lbl, "", t.week, t.week_target, "Days off");
         self.week_period.set_text(&t.week_label);
-        self.month_lbl.set_text(&format!("{:.2}h", t.month));
+        apply(&self.month_lbl, "", t.month, t.month_target, "No working days");
         self.month_name.set_text(&t.month_label);
         self.day_next.set_sensitive(d < 0);
         self.week_next.set_sensitive(w < 0);
